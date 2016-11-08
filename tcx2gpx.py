@@ -38,7 +38,56 @@ class TcxXMLParser(object):
 
     def extension(self, heartrate, temperature, cadence, power):
         '''Compiles the GPX extension part of a trackpoint'''
-        return ""
+        extension_found = False
+
+        hr_ext = ""
+        if (heartrate is not None):
+            extension_found = True
+            hr_ext = "<gpxtpx:hr>{hr}</gpxtpx:hr>".format(hr=heartrate)
+
+        tmp_ext = ""
+        if (temperature is not None):
+            extension_found = True
+            tmp_ext = "<gpxtpx:atemp>{temp}</gpxtpx:atemp>".format(
+                                                    temp=temperature)
+
+        cad_ext = ""
+        if (cadence is not None):
+            extension_found = True
+            cad_ext = "<gpxtpx:cad>{cadence}</gpxtpx:cad>".format(
+                                                    cadence=cadence)
+
+        pow_ext = ""
+        if (power is not None):
+            extension_found = True
+            pow_ext = "<gpxtpx:power>{power}</gpxtpx:power>".format(
+                                                    power=power)
+
+        if not extension_found:
+            return ""
+
+        #Compose return string
+        ret = """<extensions>
+        <gpxtpx:TrackPointExtension>
+            {hrext}""".format(hrext=hr_ext)
+
+        if tmp_ext != "":
+            ret += """
+            {tmpext}""".format(tmpext=tmp_ext)
+
+        if pow_ext != "":
+            ret += """
+            {powext}""".format(powext=pow_ext)
+
+        if cad_ext != "":
+            ret += """
+            {cadext}""".format(cadext=cad_ext)
+
+        ret += """
+        </gpxtpx:TrackPointExtension>
+    </extensions>"""
+
+        return ret
 
 
 # pylint: disable=R0912
@@ -46,10 +95,138 @@ class TcxXMLParser(object):
     def __parse_trackpoint(self, trackpoint):
         '''Parse one trackpoint from the TCX file
             and write the appropriate GPX line'''
+        latitude = None
+        longitude = None
+        altitude = None
+        speed = None
+        heartrate = None
+        cadence = None
+        power = None
+        temperature = None
+        inttime = None
+
+        self.__nb_trackpoints_parsed += 1   #One more trackpoint parsed
+        #Progress bar: print a dot for every 100 trackpoint
+        if self.__nb_trackpoints_parsed % 100 == 0:
+            sys.stdout.write(".")
+            if self.__nb_trackpoints_parsed % (80*100) == 0:
+                sys.stdout.write("\n")
+
+        #Analyse trackpoint data
+        '''
+        Sample data
+
+        <Trackpoint>
+          <Time>2016-10-07T08:01:12Z</Time>
+          <Position>
+            <LatitudeDegrees>46.291537</LatitudeDegrees>
+            <LongitudeDegrees>11.244808</LongitudeDegrees>
+          </Position>
+          <AltitudeMeters>245.2</AltitudeMeters>
+          <DistanceMeters>0.0</DistanceMeters>
+          <HeartRateBpm>
+            <Value>98</Value>
+          </HeartRateBpm>
+          <Cadence>70</Cadence>
+          <Extensions>
+            <TPX xmlns="http://www.garmin.com/xmlschemas/ActivityExtension/v2">
+              <Watts>81</Watts>
+              <Speed>19.09785839292334</Speed>
+            </TPX>
+          </Extensions>
+        </Trackpoint>
+        '''
+        for node in child_elements(trackpoint):
+            key = node.tagName
+
+            if key.lower() == "time":
+                val = node.firstChild.nodeValue
+                inttime = val
+
+            elif key.lower() == "position":
+                for subNode in child_elements(node):
+                  subKey = subNode.tagName
+                  if subKey.lower() == "latitudedegrees":
+                    subVal = subNode.firstChild.nodeValue
+                    latitude = float(subVal)
+
+                  elif subKey.lower() == "longitudedegrees":
+                    subVal = subNode.firstChild.nodeValue
+                    longitude = float(subVal)
+                  #print subKey, subVal
+
+            elif key.lower() == "altitudemeters":
+                val = node.firstChild.nodeValue
+                if self.__opts['noalti']:
+                    altitude = 0
+                else:
+                    altitude = float(val)
+
+            elif key.lower() == "distancemeters":
+                val = node.firstChild.nodeValue
+                cadence = int(float(val))
+
+            elif key.lower() == "heartratebpm":
+                val = node.firstChild.firstChild.nodeValue.replace(',', '.')
+                heartrate = int(val)
+
+            elif key.lower() == "cadence":
+                val = node.firstChild.nodeValue
+                cadence = int(val)
+
+            elif key.lower() == "temperature":
+                temperature = float(val)
+
+            elif key.lower() == "extensions":
+                for subNode in child_elements(child_elements(node)[0]):
+                  subKey = subNode.tagName
+                  if subKey.lower() == "watts":
+                    subVal = subNode.firstChild.nodeValue
+                    power = float(subVal)
+                  elif subKey.lower() == "speed":
+                    subVal = subNode.firstChild.nodeValue
+                    speed = float(subVal)
+                  #print subKey, subVal
+
+        #Format output
+        if latitude is not None and longitude is not None:
+            if self.__opts['noalti']:
+                print >> self.__outputfile, """
+<trkpt lat="{latitude}" lon="{longitude}"><time>{time}</time><speed>{speed}</speed>
+    {extension}
+</trkpt>
+""".format(latitude=latitude, longitude=longitude,
+           time=inttime, speed=speed,
+           extension=self.extension(heartrate, temperature,
+                                    cadence, power))
+            else:
+                print >> self.__outputfile, """
+<trkpt lat="{latitude}" lon="{longitude}"><ele>{altitude}</ele><time>{time}</time><speed>{speed}</speed>
+    {extension}
+</trkpt>
+""".format(latitude=latitude, longitude=longitude, altitude=altitude,
+           time=inttime, speed=speed,
+           extension=self.extension(heartrate, temperature,
+                                    cadence, power))
+
 
 
     def __parse_trackpoints(self, trackpoints):
         '''Parse all trackpoints from the TCX file'''
+        for node in child_elements(trackpoints):
+            if node.tagName == "Activities":
+                self.__parse_trackpoints(node)
+            elif node.tagName == "Activity":
+                self.__parse_trackpoints(node)
+            elif node.tagName == "Lap":
+                self.__parse_trackpoints(node)
+            elif node.tagName == "Track":
+                self.__parse_trackpoints(node)
+            key = node.tagName
+
+            #Now let's get those trackpoints
+            if key.lower() == "trackpoint":
+                self.__parse_trackpoint(node)
 
 
     def execute(self):
@@ -76,13 +253,13 @@ xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/
   <trk>
     <trkseg>
 """
-#creator="tcx2gpx" version="1.0"
 
         #Parse TCX file
         root = self.__root
         for node in child_elements(root):
             key = node.tagName
-            if key.lower() == "globalsat_gb580":
+
+            if key.lower() == "trainingcenterdatabase":
                 self.__parse_trackpoints(node)
 
         #Finish writing GPX file
@@ -96,11 +273,9 @@ xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/
 def usage():
     '''Prints default usage help'''
     print """
-tcx2gpx [--noalti] [--noext] [--nopower] [--notemp] filename
+tcx2gpx [--noalti] filename
 Creates a file filename.gpx in GPX format from filename in .tcx XML format.
 If option --noalti is given, elevation will be not be set. Otherwise, elevation is retrieved from barometric altimeter information.
-If option --noext is given, extended data (heartrate, temperature, cadence, power) will not generated. Useful for instance if size of output file matters.
-If option --nopower is given, power data will not be inserted in the extended dataset.
 """
 
 
@@ -141,8 +316,7 @@ def main():
     try:
         ops, args = getopt.getopt(sys.argv[1:],
             "ha",
-            ["help", "noalti", "noext",
-            "nopower", "notemp"])
+            ["help", "noalti"])
     except getopt.GetoptError, err:
         # print help information and exit:
         print str(err) # will print something like "option -a not recognized"
@@ -154,10 +328,7 @@ def main():
         sys.exit(2)
 
     #Parse command-line options
-    opts = {'noalti':False,
-            'noext':False,
-            'nopower':False,
-            'notemp':False}
+    opts = {'noalti':False}
 
     for option, arg in ops:
         if option in ("-h", "--help"):
@@ -165,12 +336,6 @@ def main():
             sys.exit()
         elif option in ("-n", "--noalti"):
             opts['noalti'] = True
-        elif option in ("--noext"):
-            opts['noext'] = True
-        elif option in ("--nopower"):
-            opts['nopower'] = True
-        elif option in ("--notemp"):
-            opts['notemp'] = True
         else:
             assert False, "unhandled option"
 
